@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.gradio/
+.env
+models/*
+!models/.gitkeep
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+*.log
