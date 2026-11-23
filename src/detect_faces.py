@@ -1,6 +1,7 @@
 
 """Offline face detection using a local SCRFD ONNX model."""
-
+import os
+os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
 import argparse
 import time
 from pathlib import Path
