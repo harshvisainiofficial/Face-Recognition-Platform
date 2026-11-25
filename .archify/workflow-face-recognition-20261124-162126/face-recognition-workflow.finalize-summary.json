@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "workflow",
+  "quality": "showcase",
+  "specification": {
+    "path": "/home/aitg/Harshvi/FaceRoster/.archify/workflow-face-recognition-20261124-162126/candidate.json",
+    "sha256": "64fbb0bde7fe10aba06c834f9e87b3af73544340b6c4c628db1323421e567f4a",
+    "bytes": 4761
+  },
+  "artifact": {
+    "path": "/home/aitg/Harshvi/FaceRoster/.archify/workflow-face-recognition-20261124-162126/face-recognition-workflow.html",
+    "sha256": "c9328a42898f500ba6887101df1a61b3b44659b75c0bada932c4a4d4ba0dc193",
+    "bytes": 942877
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/home/aitg/Harshvi/FaceRoster/.archify/workflow-face-recognition-20261124-162126/face-recognition-workflow.finalize.json",
+    "summaryReceipt": "/home/aitg/Harshvi/FaceRoster/.archify/workflow-face-recognition-20261124-162126/face-recognition-workflow.finalize-summary.json",
+    "browserCheckReceipt": "/home/aitg/Harshvi/FaceRoster/.archify/workflow-face-recognition-20261124-162126/face-recognition-workflow.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.3.0",
+    "availableVersion": "3.3.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-24T10:53:35.909Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 12888,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}
