@@ -1,400 +1,259 @@
 # FaceRoster — Offline Group Photo Recognition
 
-**Take-home Task A: Who Is in the Photo?**  
-A locally running Python application that enrolls people from reference photographs and labels faces in a group photograph as a registered name or **Unknown**.
+**Take-home Task A: Who Is in the Photo?**
 
-> FaceRoster combines local face detection, recognition and an interactive Gradio interface. It is designed for offline operation after dependencies and model weights have been installed.
+FaceRoster is a local Python application that enrolls identities from reference photographs and identifies faces in a group photograph. Unmatched faces are labeled **Unknown**. It uses SCRFD, ArcFace, ONNX Runtime and a Gradio interface, with no hosted inference API required.
 
 ## Features
 
-- Select a folder of reference photographs through a local browser UI; identity names are derived from filenames.
-- Detect reference faces with **SCRFD**, align using facial landmarks, and extract **512-dimensional ArcFace embeddings**.
-- Store enrolled embeddings in the current Gradio session; changing the reference set replaces the gallery.
-- Detect and match faces in a group photograph using cosine similarity and a configurable rejection threshold.
-- Mark unmatched faces as **Unknown**.
-- Show an annotated photograph, detected/known/unknown counts, and a detailed results table.
-- Use adaptive reference detection for difficult photographs, with recovery notes for review.
-- Browse uploaded reference filenames in a scrollable list; enrollment and recognition panels appear after processing.
-- Export the annotated image and a CSV with assignments, similarity scores, and bounding boxes.
-- Use local ONNX models with ONNX Runtime's CPU execution provider; no hosted inference API is required.
-
-**Important:** Cosine similarity is **not** a calibrated identity probability. The default threshold (`0.45`) is experimental and has not been validated for arbitrary identities.
+- Reference folder upload with identity names derived from filenames.
+- Face detection, landmark-based alignment and 512-dimensional face embeddings.
+- Session-local reference gallery and cosine similarity matching.
+- Configurable rejection threshold and Unknown labels.
+- Annotated group photograph, known/unknown counts and recognition details.
+- CSV and annotated image downloads.
+- Adaptive reference detection for difficult photographs, with recovery notes for review.
 
 ## 1. Requirements
 
-### Tested development workstation
+Tested development configuration:
 
-| Component | Development configuration |
-| --- | --- |
+| Component | Configuration |
+|---|---|
 | OS | Ubuntu 24.04.2 LTS |
 | CPU | Intel Xeon Silver 4114, 20 logical CPUs |
-| GPU | NVIDIA Quadro P1000 (not required for current CPU pipeline) |
 | RAM | 32 GB |
-| Python | **3.11**, in Conda environment `faceroaster` |
+| GPU | NVIDIA Quadro P1000 (not required) |
+| Python | 3.11 |
 | Runtime | ONNX Runtime CPU |
-| UI | Gradio 5.x (verify exact installed version) |
+| Interface | Gradio |
 
-A CUDA-capable GPU is **not** required. Other machines may work, but have not yet been tested.
+Internet access is required for initial dependency installation and authorized model acquisition. A GPU is not required. Other platforms have not been verified.
 
-You will need Git, Conda/Miniconda or a Python 3.11 virtual environment, internet **during initial installation**, and local copies of both ONNX model files.
+## 2. Installation
 
-## 2. Project structure
+Clone the repository and enter the project root. Replace the URL if the repository is published under a different name.
 
-The relevant project layout is:
+```bash
+git clone https://github.com/harshvisainiofficial/FaceRoster.git
+cd FaceRoster
+```
+
+If you already have a local copy, simply enter that directory instead.
+
+Create and activate a Conda environment:
+
+```bash
+conda create -n faceroaster python=3.11 -y
+conda activate faceroaster
+python --version
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-lock.txt
+```
+
+Alternatively, use a Python 3.11 virtual environment:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-lock.txt
+```
+
+The lock file is intended to be generated from the working development environment. Clean-clone installation has not yet been independently verified. If InsightFace compilation fails, install the appropriate system build tools and inspect the error before changing package versions.
+
+## 3. Required model files (important)
+
+The model weights are deliberately excluded from GitHub. The recognition model exceeds GitHub's normal individual file size limit, and the pretrained weights have separate licensing restrictions. The empty `models/` directory is intentional.
+
+The development setup uses the InsightFace Buffalo-L model pack:
+
+| Original filename | Required local filename | Purpose |
+|---|---|---|
+| `det_10g.onnx` | `models/detector.onnx` | SCRFD face detection and landmarks |
+| `w600k_r50.onnx` | `models/recognizer.onnx` | ArcFace embeddings |
+
+### Obtain and install the models
+
+1. Visit the [official InsightFace model zoo](https://github.com/deepinsight/insightface/tree/master/model_zoo) or [Python package model documentation](https://github.com/deepinsight/insightface/tree/master/python-package).
+2. Review the pretrained model terms and obtain the Buffalo-L archive only if your intended use is authorized. The pretrained models are generally provided for non-commercial research; the code license does not automatically grant rights to the weights. Company or commercial use may require separate permission.
+3. The [official Buffalo-L release archive](https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip) is the expected source. If unavailable, consult the official documentation rather than substituting an unverified model.
+4. After obtaining the archive, extract it and copy the two required files. The example assumes the archive is in Downloads and contains the ONNX files at its root:
+
+```bash
+mkdir -p models
+mkdir -p ~/Downloads/buffalo_l
+unzip ~/Downloads/buffalo_l.zip -d ~/Downloads/buffalo_l
+find ~/Downloads/buffalo_l -name '*.onnx'
+cp ~/Downloads/buffalo_l/det_10g.onnx models/detector.onnx
+cp ~/Downloads/buffalo_l/w600k_r50.onnx models/recognizer.onnx
+ls -lh models/
+```
+
+Adjust the source paths if extraction creates a nested directory. The expected local files are approximately 17 MB and 167 MB, respectively.
+
+If `MODEL_CHECKSUMS.txt` is included, verify the files from the project root:
+
+```bash
+sha256sum -c MODEL_CHECKSUMS.txt
+```
+
+Verify that both models load locally:
+
+```bash
+python - <<'PY'
+import onnxruntime as ort
+for path in ['models/detector.onnx', 'models/recognizer.onnx']:
+    session = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
+    print(path, 'loaded successfully')
+    print('Inputs:', [(x.name, x.shape) for x in session.get_inputs()])
+    print('Outputs:', [(x.name, x.shape) for x in session.get_outputs()])
+PY
+```
+
+The recognizer expects 112 × 112 face inputs and produces 512-dimensional embeddings. Do not rely on automatic model downloading at runtime.
+
+## 4. Run FaceRoster
+
+From the project root:
+
+```bash
+conda activate faceroaster
+export GRADIO_ANALYTICS_ENABLED=False
+export NO_ALBUMENTATIONS_UPDATE=1
+python -m src.app_backup
+```
+
+Open **http://127.0.0.1:7860** in your browser on the same machine. If the final UI has been renamed to `src/app.py`, use `python -m src.app` instead. The documented entry point is based on the supplied previous README.
+
+Press Ctrl+C in the terminal to stop the application. If port 7860 is occupied, inspect the existing service before stopping it.
+
+## 5. How to use the application
+
+### Reference enrollment
+
+1. Prepare a folder of consented or appropriately licensed reference photographs, ideally one clearly visible face per image.
+2. Name each file after the person, for example `Priya Sharma.jpg` or `Aarav Mehta.png`.
+3. Click **Select reference folder** and select the directory.
+4. Click **Enroll Reference Faces** and review the registered identities and enrollment report.
+
+Supported enrollment formats include JPG, JPEG, PNG and WebP. A different folder can contain entirely different identities. No identity list is hardcoded. Adaptive recovery may select a dominant foreground face in ambiguous photographs; review such selections because they can be incorrect.
+
+### Group photo recognition
+
+1. Upload a group photograph.
+2. Start with detection resolution 640 and cosine similarity threshold 0.45.
+3. Click **Recognize Faces**.
+4. Review the annotated image, recognition details and known/unknown counts.
+5. Download the annotated image and CSV if required.
+
+The default threshold is experimental. Cosine similarity is not a calibrated identity probability. A new enrollment replaces the current gallery. Reset clears the UI session but may not remove cached or generated files from disk.
+
+## 6. Optional command-line usage
+
+Create your own `data/references/` and `data/practice/` folders and supply images before running these examples. Practice images are not included in the repository.
+
+```bash
+mkdir -p data/references data/practice outputs
+```
+
+Detection:
+
+```bash
+python -m src.detect_faces --image data/practice/group3.jpg \
+  --model models/detector.onnx --output outputs/detected.jpg --size 640
+```
+
+Enrollment:
+
+```bash
+python -m src.enrollment --folder data/references
+```
+
+Recognition:
+
+```bash
+python -m src.recognition --references data/references \
+  --image data/practice/recognition_test.jpg \
+  --output outputs/recognized.jpg --csv outputs/recognition_results.csv \
+  --threshold 0.45 --size 640
+```
+
+The CLI may retain the original strict enrollment behavior even when adaptive recovery is integrated in the UI.
+
+## 7. Project structure
 
 ```text
 FaceRoster/
 ├── README.md
-├── requirements-lock.txt       # Generate from the working environment
-├── models/
-│   ├── detector.onnx           # Local SCRFD detector (not normally committed)
-│   └── recognizer.onnx         # Local ArcFace model (not normally committed)
-├── data/
-│   ├── references/             # Practice references; keep private
-│   └── practice/               # Practice group photos; keep private
-├── outputs/                    # Generated photos and CSVs; keep private
+├── requirements-lock.txt
+├── MODEL_CHECKSUMS.txt
+├── AI_COLLAB.md
+├── RESEARCH.md
+├── models/                 # Local weights, excluded from Git
+│   ├── .gitkeep
+│   ├── detector.onnx       # Obtain separately
+│   └── recognizer.onnx     # Obtain separately
+├── data/                   # Local input photographs
+├── outputs/                # Generated results
 ├── docs/
 ├── src/
 │   ├── __init__.py
 │   ├── detect_faces.py
 │   ├── enrollment.py
 │   ├── recognition.py
-│   ├── reference_detection.py  # Adaptive enrollment, if integrated
-│   ├── app.py                 # Original UI, if retained
-│   └── app_backup.py          # Latest UI supplied for documentation
+│   ├── reference_detection.py
+│   └── app_backup.py
 └── tests/
 ```
 
-The exact contents of the repository may vary. The latest supplied UI, `src/app_backup.py`, imports and calls `detect_reference_face`.
+The exact source and companion documentation filenames may vary with the final repository revision.
 
-## 3. Installation — Linux (Conda recommended)
-
-Open a Linux terminal. The following commands assume you cloned the project into `~/Harshvi/FaceRoster`, as on the development workstation. **Change the path if your clone is elsewhere.**
-
-### Step 1 — Get the repository
-
-If you already have the project, skip cloning and enter its directory:
-
-```bash
-cd ~/Harshvi/FaceRoster
-```
-
-For a fresh machine, clone the **actual public repository URL** supplied by the author (do not use a placeholder URL):
-
-```bash
-git clone <YOUR_ACTUAL_GITHUB_REPOSITORY_URL> FaceRoster
-cd FaceRoster
-```
-
-The repository URL must be replaced with a real URL before executing that command.
-
-### Step 2 — Create and activate a clean environment
-
-```bash
-conda create -n faceroaster python=3.11 -y
-conda activate faceroaster
-python --version
-```
-
-Expected: `Python 3.11.x` and a terminal prompt beginning with `(faceroaster)`.
-
-If Conda is unavailable, install Python 3.11 and its `venv` package using your Linux distribution's supported method, then run:
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python --version
-```
-
-Do not replace the system Python installation.
-
-### Step 3 — Install dependencies
-
-**Preferred, reproducible installation:** If the repository contains a lock file generated from the verified development environment:
-
-```bash
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements-lock.txt
-```
-
-**Fallback for an unfinalized repository:** Install the baseline ML packages and Gradio 5. These are the versions proposed during development; compatibility of a fresh installation must be checked:
-
-```bash
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install "numpy==1.26.4" "onnxruntime==1.20.1" \
-  "opencv-python-headless==4.10.0.84" "Pillow==11.1.0" \
-  "insightface==0.7.3" "Cython==3.0.12"
-python -m pip install "gradio>=5.0,<6.0"
-```
-
-InsightFace may compile native components; if installation fails, read the build error and install missing system development tools rather than changing Python or dependencies at random.
-
-Check imports:
-
-```bash
-python - <<'PY'
-import cv2, numpy, onnxruntime, insightface, gradio
-print('OpenCV:', cv2.__version__)
-print('NumPy:', numpy.__version__)
-print('ONNX Runtime:', onnxruntime.__version__)
-print('InsightFace:', insightface.__version__)
-print('Gradio:', gradio.__version__)
-print('Providers:', onnxruntime.get_available_providers())
-PY
-```
-
-The providers list must contain `CPUExecutionProvider`.
-
-On the development machine, after confirming the complete UI works, generate the exact dependency lock:
-
-```bash
-python -m pip freeze > requirements-lock.txt
-```
-
-Commit that file only after checking a clean-environment installation.
-
-## 4. Install model files locally
-
-The application expects **two existing local files**:
+## 8. Architecture
 
 ```text
-models/detector.onnx
-models/recognizer.onnx
+Reference photos → SCRFD → Face alignment → ArcFace → Normalized gallery
+Group photo → SCRFD → Face alignment → ArcFace → Cosine similarity
+                                              → Known / Unknown
+                                              → Image + table + CSV
 ```
 
-The development setup used the InsightFace **Buffalo-L** model pack, with these source filenames:
+## 9. Offline verification and development observations
 
-| Model pack filename | Local filename | Function |
-| --- | --- | --- |
-| `det_10g.onnx` | `detector.onnx` | SCRFD face detection and landmarks |
-| `w600k_r50.onnx` | `recognizer.onnx` | ArcFace recognition embeddings |
+After installing dependencies and models, disconnect from the internet, restart the app, enroll a new folder, recognize a group photo and export both results. Repeat after restarting the app. Check logs for network attempts.
 
-1. During **setup while online**, consult the [official InsightFace model zoo](https://github.com/deepinsight/insightface/blob/master/python-package/docs/model_zoo.md).
-2. Review the **model-weights license** before downloading or redistributing them. InsightFace code and pretrained weights have different terms; Buffalo weights are generally offered for non-commercial research use. Do not assume commercial reuse is permitted for an internship/company deployment.
-3. Download and extract the authorized model pack.
-4. Copy only the two required files into `models/`:
+- The standalone detector was tested on three group photographs online and offline. One run detected 13 faces in 0.382 seconds, including model loading.
+- Initial enrollment succeeded for 5 of 5 reference photographs.
+- Expanded enrollment initially succeeded for 13 of 17 photographs. Adaptive detection was subsequently introduced; its final recovery rate is not recorded.
+- Nine CLI recognition runs completed, with 41 detected faces in total; two additional images failed to decode. These counts are not accuracy measurements.
+- Observed recognition runtimes were approximately 3.0–4.1 seconds, including loading and re-enrollment.
 
-```bash
-mkdir -p models
-cp ~/Downloads/buffalo_l/det_10g.onnx models/detector.onnx
-cp ~/Downloads/buffalo_l/w600k_r50.onnx models/recognizer.onnx
-ls -lh models/
-```
-
-Adjust the extracted folder path if necessary. On the development machine, the detector was approximately **17 MB** and the recognizer approximately **167 MB**. File sizes alone do not authenticate a model; for a reproducible release, record checksums of the authorized files.
-
-**Do not rely on InsightFace's automatic model-download behavior.** The application loads explicit local ONNX paths and should fail clearly if they are missing. Model weights should not be committed to a public Git repository without reviewing licensing and repository-size limits.
-
-Verify the recognizer:
-
-```bash
-python - <<'PY'
-import onnxruntime as ort
-session = ort.InferenceSession('models/recognizer.onnx', providers=['CPUExecutionProvider'])
-print('Inputs:', [(x.name, x.shape) for x in session.get_inputs()])
-print('Outputs:', [(x.name, x.shape) for x in session.get_outputs()])
-PY
-```
-
-Observed development output: input `['None', 3, 112, 112]`; output `[1, 512]` (tensor names may differ).
-
-## 5. Start the application
-
-From the **project root**, with the environment activated:
-
-```bash
-conda activate faceroaster
-cd ~/Harshvi/FaceRoster
-python -m src.app_backup
-```
-
-If you rename the final UI file to `src/app.py`, use `python -m src.app` instead.
-
-Open **http://127.0.0.1:7860** in a browser on the same machine.
-
-The app binds to `127.0.0.1`, sets `share=False`, and is not intended for public hosting. If port 7860 is occupied, stop the other local service before restarting. Press **Ctrl+C** in the terminal to stop FaceRoster.
-
-The application uses local inference. Gradio and dependency network/telemetry behavior still requires a complete offline audit before an unqualified claim of zero network attempts.
-
-## 6. Use FaceRoster
-
-### A. Enroll a reference folder
-
-1. Prepare a directory of reference photographs; ideally one clearly visible face per image.
-2. Name each file after the person, e.g. `Priya Sharma.jpg` or `Aarav Mehta.png`.
-3. In the browser, click **Select reference folder** and choose the directory. Do not type a folder path into the terminal.
-4. Click **Enroll Reference Faces**.
-5. Read **Registered identities** and the **Enrollment report**. Fix or review any skipped or ambiguous files.
-
-Supported formats in the enrollment implementation: `.jpg`, `.jpeg`, `.png`, `.webp`. Filename stems are used as labels. The browser's directory upload must preserve filenames correctly; verify this on the target machine. A new folder can contain entirely different people; no identity list is hardcoded.
-
-**Multiple faces:** The original enrollment logic rejects such photos. The later adaptive UI code may select a clearly dominant foreground face, but this is heuristic and can select the wrong person. Review any adaptive selection; do not treat it as automatically verified.
-
-### B. Recognize a group photograph
-
-1. Upload a group photograph under **Group Photograph**.
-2. Leave the detection resolution at `640` for the initial run.
-3. Leave the cosine similarity threshold at `0.45` **for diagnostic testing only**.
-4. Click **Recognize Faces**.
-5. Review the annotated photo, results table, and detected/known/unknown counts.
-6. Download the annotated photograph or CSV if required.
-
-A face is labeled with its nearest registered identity only if its cosine similarity meets the configured threshold; otherwise it is labeled **Unknown**. This is open-set recognition with a provisional threshold, not a probability-based confidence system.
-
-### C. Replace references or reset
-
-Select a different folder and enroll again to replace the current gallery. Use **Reset** to clear the current UI session and its in-memory gallery. Reset does **not necessarily delete** Gradio upload caches or previously generated output files from disk.
-
-## 7. Command-line operation (optional)
-
-The UI is the intended user workflow; these commands help debug the underlying models.
-
-### Face detection only
-
-```bash
-python -m src.detect_faces \
-  --image data/practice/group3.jpg \
-  --model models/detector.onnx \
-  --output outputs/detected.jpg \
-  --size 640
-```
-
-### Reference enrollment only
-
-```bash
-python -m src.enrollment --folder data/references
-```
-
-### Group recognition
-
-```bash
-python -m src.recognition \
-  --references data/references \
-  --image data/practice/recognition_test.jpg \
-  --output outputs/recognized.jpg \
-  --csv outputs/recognition_results.csv \
-  --threshold 0.45 \
-  --size 640
-```
-
-Open the output on a Linux desktop:
-
-```bash
-xdg-open outputs/recognized.jpg
-```
-
-**Note:** The standalone `src.enrollment` and `src.recognition` commands use the original enrollment behavior unless they have also been explicitly updated to use `src.reference_detection`. Adaptive enrollment changes made to `src.app` do not automatically change those CLI modules.
-
-## 8. Offline operation and verification
-
-**Internet is needed only for initial installation and authorized model acquisition.** To test the finished runtime:
-
-1. Install all dependencies and place both ONNX files locally while online.
-2. Stop the app; disconnect Wi-Fi, Ethernet, VPN, and other network interfaces as applicable.
-3. Restart the terminal and activate the environment.
-4. Start the app with `python -m src.app_backup`.
-5. Select a **new** reference folder through the UI and enroll its identities.
-6. Upload a group photo, recognize faces, and verify labels and result counts.
-7. Download the annotated image and CSV.
-8. Repeat after restarting the application.
-9. Check logs for update checks, telemetry, CDN assets, model downloads, or other network attempts.
-
-The environment variable `NO_ALBUMENTATIONS_UPDATE=1` suppresses a known Albumentations version-check request. The UI sets `GRADIO_ANALYTICS_ENABLED=False` and `analytics_enabled=False`. These settings are useful but do **not**, by themselves, prove that every dependency makes zero network requests.
-
-**Observed:** The standalone face detector was successfully run offline on three practice group photos. **Not yet verified in the supplied evidence:** a complete offline Gradio UI test with a new reference folder, plus a network-access audit. Record the actual result before claiming full verification.
-
-## 9. Evaluation and observed results
-
-The following are **development observations**, not an official benchmark:
-
-- SCRFD detection was tested on three group photos online and offline; one run detected **13 faces** in **0.382 seconds**, including model loading.
-- Initial reference enrollment: **5 of 5** practice identities enrolled, each with a 512-dimensional embedding.
-- Expanded UI reference enrollment: **13 of 17** photos enrolled; three reported no face, and one reported two faces. Adaptive reference detection is integrated in the latest supplied UI; its final recovery rate is not recorded.
-- Nine command-line group-photo runs completed and two additional runs failed to decode their images. The successful runs reported a total of **41 detected faces**. Their name assignments are not a ground-truth accuracy measure.
-- One group-photo run reported two known assignments and one Unknown, with similarities **0.6680**, **0.6534**, and **0.2309**, respectively.
-- Some known faces wearing dark sunglasses received similarity scores below the provisional threshold. This is an observed failure mode, not proof of a universal sunglasses effect.
-- Per-run processing times in the shared logs were roughly **3.0–4.1 seconds**, **including model loading and re-enrollment**; they are not steady-state UI latency benchmarks.
-
-### Evaluation still needed
-
-Collect labeled development and held-out test photographs; measure face-detection recall, correct known identification, unknown rejection, false acceptance, false rejection, and processing latency. Calibrate thresholds on development data only, then freeze the setting before held-out evaluation. Do not invent results or infer accuracy from assignment counts.
+Full offline UI verification, network auditing, threshold calibration and clean-clone testing remain unverified in the supplied evidence. These results are development observations, not a formal benchmark.
 
 ## 10. Troubleshooting
 
-| Problem | What to check |
-| --- | --- |
-| `ModuleNotFoundError` | Activate `faceroaster`, check `python --version`, install the lock file in the active environment. |
-| `Required local model not found` | Check `models/detector.onnx` and `models/recognizer.onnx` from the project root. |
-| `Cannot read group image` | Confirm the path exists; inspect with `file path/to/image.jpg`. Renaming an extension does not convert the image. Re-encode with a suitable image tool if supported. |
-| No face detected in a close-up | Try adaptive reference detection and padding; verify the resulting face selection. |
-| Multiple faces in a reference photo | Review foreground/background faces; do not silently assume the largest is the intended identity. |
-| Known face labeled Unknown | Inspect cosine similarity and image quality; do not lower the threshold without measuring unknown false acceptance. |
-| Unknown face given a known name | Threshold may be too permissive; evaluate known and unknown examples and consider margin/ambiguity checks. |
-| `warning: det_size is already set` | InsightFace may ignore subsequent `prepare(input_size=...)` calls. Confirm actual detector configuration before claiming a resolution sweep worked. |
-| `FutureWarning` from `face_align.py` | Deprecation warning in a dependency; not necessarily a runtime failure. Avoid untested upgrades before submission. |
-| Albumentations update-check warning | Ensure `NO_ALBUMENTATIONS_UPDATE=1` is set **before** importing InsightFace. |
-| Browser cannot connect | Confirm `python -m src.app_backup` is running and visit `http://127.0.0.1:7860` on the same machine. |
-| Folder names lost after upload | Inspect Gradio's uploaded file paths; filename preservation is essential for identity labels. |
+| Problem | Suggested action |
+|---|---|
+| ModuleNotFoundError | Activate the environment and install the lock file. |
+| Model not found | Check the two local ONNX paths from the project root. |
+| Image cannot be read | Verify the actual image format and re-encode if necessary. |
+| No face or multiple faces in a reference | Review image quality and adaptive recovery notes. |
+| Known face labeled Unknown | Review pose, lighting, occlusion and similarity; avoid blindly lowering the threshold. |
+| Browser cannot connect | Confirm the app is running and check its printed local URL. |
+| Albumentations update warning | Set `NO_ALBUMENTATIONS_UPDATE=1` before importing dependencies. |
 
-## 11. Known limitations
+## 11. Limitations and privacy
 
-- One reference image per identity is sensitive to pose, blur, lighting, occlusion, sunglasses, and poor crops.
-- Detection can miss tiny or heavily cropped faces; adaptive recovery is heuristic.
-- The default similarity threshold is **not calibrated** for 50 unfamiliar identities.
-- Independent nearest-neighbor matching can assign the same identity to multiple faces in one group photograph.
-- Foreground-face selection from images containing multiple people may be incorrect; manual review is recommended.
-- The UI's gallery is session-local; output files and upload caches may remain on disk.
-- The implementation currently uses CPU inference; GPU performance has not been evaluated.
-- The actual license terms of the model weights must be checked before distribution or commercial use.
-- Full UI offline verification, privacy audit, and clean-clone reproducibility remain to be completed.
+Recognition can be affected by pose, blur, lighting, sunglasses, small faces and poor crops. Adaptive face selection is heuristic. The threshold is not calibrated for arbitrary identities, and independent matching may assign the same identity to multiple faces. GPU performance has not been evaluated.
 
-## 12. Repository hygiene and privacy
+Reference images, face embeddings and outputs are sensitive biometric data. Use authorized images, review results manually, minimize retention and do not use this experimental application as the sole basis for consequential identity or access decisions.
 
-Do not commit private reference images, group photos, generated output files, caches, credentials, or model weights without explicit authorization. A suitable `.gitignore` includes:
+Model weights, private photographs, generated outputs, caches and credentials are excluded from Git. See `AI_COLLAB.md`, `RESEARCH.md` and any accompanying architecture documentation for development decisions.
 
-```gitignore
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
-.gradio/
-.env
-models/*
-!models/.gitkeep
-data/*
-!data/.gitkeep
-outputs/*
-!outputs/.gitkeep
-*.log
-```
+## 12. References
 
-Face embeddings are biometric data. Use consented or appropriately licensed images, minimize retention, and delete generated files when no longer needed.
-
-## 13. Architecture and research
-
-The local processing path is:
-
-```text
-Reference folder ──> SCRFD detection ──> 5-point face alignment
-                 └─> ArcFace embedding ──> L2 normalization ──> In-memory gallery
-
-Group photo ──────> SCRFD detection ──> Alignment ──> ArcFace embedding
-                 └─> Cosine similarity against gallery
-                 └─> Threshold-based known/Unknown assignment
-                 └─> Annotated image + results table + CSV
-```
-
-Companion documentation, when included in the repository: `RESEARCH.md` (model and framework research), `ARCHITECTURE.md` (system design), and `AI_COLLAB.md` (engineering decisions and AI collaboration).
-
-## 14. References
-
-- [InsightFace repository](https://github.com/deepinsight/insightface)
-- [InsightFace model zoo and model terms](https://github.com/deepinsight/insightface/blob/master/python-package/docs/model_zoo.md)
-- [ONNX Runtime documentation](https://onnxruntime.ai/docs/)
-- [Gradio File documentation](https://www.gradio.app/docs/gradio/file)
-- [Gradio Blocks documentation](https://www.gradio.app/docs/gradio/blocks)
-- [Archify repository](https://github.com/tt-a1i/archify)
-
----
-
-**FaceRoster is a local experimental recognition application.** Review identity assignments carefully; do not use it as a sole basis for consequential identity or access decisions.
+- [InsightFace](https://github.com/deepinsight/insightface)
+- [InsightFace model zoo](https://github.com/deepinsight/insightface/tree/master/model_zoo)
+- [ONNX Runtime](https://onnxruntime.ai/docs/)
+- [Gradio File component](https://www.gradio.app/docs/gradio/file)
+- [Gradio Blocks](https://www.gradio.app/docs/gradio/blocks)
